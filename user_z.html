@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>user_z</title>
+    <style>
+        body { background: #000; color: #fff; font-family: 'Courier New', monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+        
+        /* Stile Video di Caricamento */
+        #loadingVideoContainer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 100; display: flex; align-items: center; justify-content: center;
+        }
+        #loadingVideo { width: 100%; height: 100%; object-fit: cover; }
+        #skipBtn { 
+            position: absolute; bottom: 30px; right: 30px; background: rgba(0, 0, 0, 0.1); 
+            border: 1px solid #000; color: #000; padding: 10px 20px; cursor: pointer; font-family: inherit;
+            z-index: 101; display: block;
+        }
+
+        .eye-container { display: flex; gap: 50px; margin-bottom: 30px; }
+        .eye { 
+            width: 35px; height: 35px; background: #fff; position: relative; overflow: hidden; border-radius: 2px; 
+            box-shadow: 0 0 25px rgba(255, 255, 255, 0.8), 0 0 10px rgba(255, 255, 255, 0.5); 
+        }
+        .lid { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: black; animation: blink 4s infinite; }
+        @keyframes blink { 0%, 10%, 90%, 100% { height: 0%; } 95% { height: 100%; } }
+        #dialogue-container { height: 80px; text-align: center; width: 80%; display: flex; align-items: center; justify-content: center; position: relative; }
+        #dialogue { font-size: 20px; color: #eee; font-weight: normal; white-space: pre-wrap; }
+        #nameInput { 
+            position: absolute; bottom: -50px; left: 50%; transform: translateX(-50%);
+            background: #000; border: 1px solid #333; color: #fff; text-align: center; 
+            font-family: inherit; padding: 10px; width: 250px; display: none; outline: none; 
+        }
+        #ui { font-size: 16px; color: #888; margin-bottom: 10px; display: none; text-align: center; letter-spacing: 2px; }
+        
+        #salt-count { display: inline-block; transition: all 0.1s; }
+        .salt-flash { color: #fff; text-shadow: 0 0 10px #fff; transform: scale(1.5); }
+
+        canvas { border: 1px solid #222; image-rendering: pixelated; background: #000; display: none; }
+        #vignette { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+            pointer-events: none; 
+            background: radial-gradient(circle, transparent 100%, black 150%); 
+            z-index: 5; display: none; 
+            transition: background 0.5s ease-in-out; 
+        }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: black; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; transition: opacity 1.5s; display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="loadingVideoContainer">
+        <video id="loadingVideo" autoplay muted playsinline>
+            <source src="animazione veve_chiara ongarelli_2G2.mp4" type="video/mp4">
+            Il tuo browser non supporta il video.
+        </video>
+        <button id="skipBtn"></button>
+    </div>
+
+    <div id="vignette"></div>
+
+    <div id="overlay">
+        <div class="eye-container">
+            <div class="eye"><div class="lid"></div></div>
+            <div class="eye"><div class="lid"></div></div>
+        </div>
+        <div id="dialogue-container">
+            <div id="dialogue">...</div>
+            <input type="text" id="nameInput" placeholder="SCRIVI QUI IL TUO NOME..." readonly>
+        </div>
+    </div>
+
+    <div id="ui">SALE: <span id="salt-count">0</span>/10 | VISTA: <span id="error-count">100</span>%</div>
+    <canvas id="gameCanvas" width="800" height="300"></canvas>
+
+<script>
+const videoContainer = document.getElementById('loadingVideoContainer');
+const video = document.getElementById('loadingVideo');
+const skipBtn = document.getElementById('skipBtn');
+
+/* Se l'utente clicca mentre il video va, si attiva l'audio */
+window.addEventListener('click', () => {
+    if (videoContainer.style.display !== 'none') {
+        video.muted = false;
+    }
+}, {once: true});
+
+function endLoadingVideo() {
+    video.pause();
+    videoContainer.style.display = 'none';
+    overlay.style.display = 'flex';
+    runIntro();
+}
+
+video.onended = endLoadingVideo;
+skipBtn.onclick = endLoadingVideo;
+
+const AudioEngine = {
+    ctx: null,
+    droneOsc: null,
+    droneFilter: null,
+    init() {
+        if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    },
+    playDrone() {
+        this.droneOsc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        this.droneFilter = this.ctx.createBiquadFilter();
+        this.droneOsc.type = 'sawtooth';
+        this.droneOsc.frequency.setValueAtTime(40, this.ctx.currentTime);
+        this.droneFilter.type = 'lowpass';
+        this.droneFilter.frequency.setValueAtTime(200, this.ctx.currentTime);
+        g.gain.setValueAtTime(0.04, this.ctx.currentTime);
+        this.droneOsc.connect(this.droneFilter).connect(g).connect(this.ctx.destination);
+        this.droneOsc.start();
+    },
+    updateDroneDarkness(level) {
+        if (!this.droneOsc || !this.droneFilter) return;
+        const newFreq = 40 - (level * 4);
+        const newFilter = 200 - (level * 35);
+        this.droneOsc.frequency.exponentialRampToValueAtTime(Math.max(20, newFreq), this.ctx.currentTime + 1);
+        this.droneFilter.frequency.exponentialRampToValueAtTime(Math.max(40, newFilter), this.ctx.currentTime + 1);
+    },
+    playTypeSound() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(150 + Math.random() * 50, this.ctx.currentTime);
+        g.gain.setValueAtTime(0.05, this.ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.05);
+        osc.connect(g).connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.05);
+    },
+    playTone(freq, type, dur, vol) {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        g.gain.setValueAtTime(vol, this.ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + dur);
+        osc.connect(g).connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + dur);
+    },
+    playThunder() {
+        if (!this.ctx) return;
+        this.playTone(60, 'square', 0.1, 0.05);
+        const bufferSize = this.ctx.sampleRate * 3;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(40, this.ctx.currentTime);
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.5, this.ctx.currentTime);
+        g.gain.linearRampToValueAtTime(0.001, this.ctx.currentTime + 2.5);
+        noise.connect(filter).connect(g).connect(this.ctx.destination);
+        noise.start();
+    }
+};
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const dialogue = document.getElementById('dialogue');
+const nameInput = document.getElementById('nameInput');
+const ui = document.getElementById('ui');
+const saltText = document.getElementById('salt-count');
+const errorText = document.getElementById('error-count');
+const vignette = document.getElementById('vignette');
+
+let gameActive = false;
+let salt = 0, errors = 0, speed = 3.2, frame = 0, startTime;
+let zombieState = 'walk', jumpY = 0, obstacle = { x: 900 };
+let lightningAlpha = 0, particles = [], shakeX = 0, shakeY = 0, glitchTimer = 0;
+let targetSpeed = 3.5, speedChangeTime = 0;
+let cmdGlow = 0;
+
+async function typeWriter(text) {
+    dialogue.textContent = "";
+    for (const char of text) {
+        dialogue.textContent += char;
+        if (char !== " ") AudioEngine.playTypeSound();
+        await new Promise(r => setTimeout(r, 45));
+    }
+}
+
+const layers = { sky: [], far: [], mid: [], near: [], fog: [] };
+for(let i=0; i<15; i++) {
+    if(i<8) layers.sky.push({ x: Math.random()*800, y: 20+Math.random()*50, type: Math.random()>0.7?'bird':'cloud', size: 20+Math.random()*40 });
+    layers.far.push({ x: i*100 + Math.random()*50, type: 'thinTree' });
+    layers.mid.push({ x: i*160 + Math.random()*80, type: Math.random()>0.4?'bigTomb':'tree' });
+    layers.near.push({ x: i*80 + Math.random()*40, type: Math.random()>0.6?'bush':'cross' });
+    layers.fog.push({ x: Math.random()*800, y: 150+Math.random()*120, s: 0.5+Math.random() });
+}
+
+async function runIntro() {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('skipIntro') === 'true') {
+        videoContainer.style.display = 'none';
+        overlay.style.display = 'none';
+        canvas.style.display = 'block';
+        ui.style.display = 'block';
+        vignette.style.display = 'block';
+        AudioEngine.init();
+        AudioEngine.playDrone();
+        startGame();
+        return;
+    }
+
+    AudioEngine.init();
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    await sleep(1000);
+    await typeWriter("Piccola anima..."); await sleep(2000);
+    await typeWriter("Ti stavo aspettando. Ti sei svegliato, finalmente."); await sleep(2000);
+    await typeWriter("Ti mancava il riflesso blu dello schermo sulle tue palpebre?"); await sleep(2000);
+    await typeWriter("Non ricordi nulla, vero?"); await sleep(2000);
+    await typeWriter("È normale... La carne è pesante, ma qui sei solo polvere e volontà."); await sleep(2000);
+    await typeWriter("Dimmi, come ti chiamavano tra i vivi prima che il silenzio ti portasse qui?"); nameInput.style.display = "block"; await sleep(4500);
+    await typeWriter("..."); await sleep(2000);
+    
+    nameInput.style.display = "none";
+    await typeWriter("Capisco... Non puoi parlare..."); await sleep(3000);
+    await typeWriter("Inutile sforzarsi... Hai passato troppo tempo a guardare senza parlare."); await sleep(3000);
+
+    await typeWriter("Non temere, piccola anima. Sono qui per ricaricare la tua coscienza, non per giudicare il tuo vuoto."); await sleep(3000);
+    await typeWriter("Ti aiuterò ad uscire da questo tuo stato di torpore, ma attenzione... Qui nulla è gratis."); await sleep(3000);
+    await typeWriter("Per uscire da questa nebbia devi raccogliere 10 frammenti di sale."); await sleep(3500);
+    await typeWriter("Il sale è realtà pura. La nebbia è il tuo feed infinito."); await sleep(3500);  
+    await typeWriter("[W] Per saltare le buche dell'oblio: se cadi nella fossa sbagliata perderai il nome per sempre."); await sleep(3000);
+    await typeWriter("[S] Per schivare le canne da zucchero: rifiuta di essere un automa che lavora per il profitto di qualcun altro."); await sleep(3000);
+    await typeWriter("[A] Per respingere i teschi dei guardiani: sono i Gede, i guardiani del velo."); await sleep(3000);
+    await typeWriter("[D] Per afferrare il sale: l'unica verità che può spezzare l'algoritmo."); await sleep(3000);
+    await typeWriter("Ora vai. CORRI!"); await sleep(3000);
+    
+    AudioEngine.playDrone();
+    overlay.style.opacity = 0;
+    await sleep(1500);
+    overlay.style.display = 'none';
+    canvas.style.display = 'block';
+    ui.style.display = 'block';
+    vignette.style.display = 'block';
+    startGame();
+}
+
+function createParticles(x, y) {
+    for(let i=0; i<10; i++) {
+        particles.push({ x: x, y: y, vx: (Math.random()-0.5)*8, vy: (Math.random()-0.5)*8, life: 1.0 });
+    }
+}
+
+function updateParticles() {
+    ctx.fillStyle = "#fff";
+    particles = particles.filter(p => {
+        p.x += p.vx; p.y += p.vy; p.life -= 0.03;
+        ctx.globalAlpha = p.life;
+        ctx.fillRect(p.x, p.y, 2, 2);
+        return p.life > 0;
+    });
+    ctx.globalAlpha = 1;
+}
+
+function drawLightning() {
+    if (Math.random() > 0.993 && lightningAlpha <= 0) {
+        lightningAlpha = 0.5 + Math.random() * 0.4;
+        AudioEngine.playThunder(); 
+    }
+    if (lightningAlpha > 0) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${lightningAlpha})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (lightningAlpha > 0.6) {
+            ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+            let startX = Math.random()*800;
+            ctx.beginPath(); ctx.moveTo(startX, 0);
+            ctx.lineTo(startX-20, 40); ctx.lineTo(startX+10, 80); ctx.lineTo(startX-10, 150);
+            ctx.stroke();
+        }
+        lightningAlpha -= 0.05;
+    }
+}
+
+function drawAtmosphere() {
+    drawLightning();
+    layers.sky.forEach(p => {
+        p.x -= speed * 0.05; if(p.x < -100) p.x = 850;
+        if(p.type === 'cloud') {
+            ctx.fillStyle = "#222";
+            ctx.globalAlpha = 0.6;
+            ctx.fillRect(p.x, p.y, p.size, 4); ctx.fillRect(p.x+5, p.y+4, p.size-10, 3);
+            ctx.globalAlpha = 1;
+        } else {
+            let wing = Math.sin(frame * 0.15) * 4;
+            ctx.strokeStyle = "#444";
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x-6, p.y-wing); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x+6, p.y-wing); ctx.stroke();
+        }
+    });
+    ctx.fillStyle = lightningAlpha > 0.1 ? "#222" : "#111";
+    layers.far.forEach(p => {
+        p.x -= speed * 0.15; if(p.x < -50) p.x = 850;
+        ctx.fillRect(p.x, 180, 2, 90);
+    });
+    layers.mid.forEach(p => {
+        p.x -= speed * 0.4; if(p.x < -80) p.x = 850;
+        ctx.fillStyle = lightningAlpha > 0.1 ? "#282828" : "#161616";
+        if(p.type === 'tree') {
+            ctx.fillRect(p.x, 140, 5, 130);
+            ctx.fillRect(p.x-10, 170, 15, 2); ctx.fillRect(p.x+3, 190, 20, 2);
+        } else {
+            ctx.fillRect(p.x, 215, 30, 55); 
+            ctx.beginPath(); ctx.arc(p.x+15, 215, 15, 0, Math.PI, true); ctx.fill();
+        }
+    });
+    ctx.fillStyle = "#222";
+    layers.fog.forEach(p => {
+        p.x -= speed * 0.5 * p.s; if(p.x < -50) p.x = 850;
+        ctx.globalAlpha = 0.4;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 35, 0, Math.PI*2); ctx.fill();
+        ctx.globalAlpha = 1;
+    });
+    layers.near.forEach(p => {
+        p.x -= speed * 0.7; if(p.x < -50) p.x = 850;
+        ctx.fillStyle = lightningAlpha > 0.1 ? "#353535" : "#202020";
+        if(p.type === 'bush') {
+            ctx.fillRect(p.x, 255, 15, 15); ctx.fillRect(p.x-5, 262, 25, 8);
+        } else {
+            ctx.fillRect(p.x, 230, 3, 40); ctx.fillRect(p.x-7, 240, 17, 3);
+        }
+    });
+}
+
+function drawGround() {
+    ctx.strokeStyle = lightningAlpha > 0.1 ? '#444' : '#282828';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, 270); ctx.lineTo(800, 270); ctx.stroke();
+    ctx.fillStyle = '#111';
+    for(let i=0; i<30; i++) {
+        let gx = (i*40 - (frame*speed*0.8)%40);
+        ctx.fillRect(gx, 275+(i%5)*4, 10, 1);
+    }
+}
+
+const voodooObjects = [
+    { key: 'S', draw: (x, y) => { 
+        ctx.fillStyle = '#666'; ctx.fillRect(x, y-75, 4, 75);
+        ctx.fillRect(x-6, y-55, 16, 2); ctx.fillRect(x-6, y-35, 16, 2);
+    }},
+    { key: 'W', draw: (x, y) => { 
+        ctx.fillStyle = '#000'; ctx.beginPath();
+        ctx.moveTo(x, y); ctx.lineTo(x+8, y+18); ctx.lineTo(x+28, y+28); ctx.lineTo(x+48, y+18); ctx.lineTo(x+55, y);
+        ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth=2; ctx.stroke();
+    }},
+    { key: 'A', draw: (x, y) => { 
+        ctx.fillStyle = '#888'; ctx.fillRect(x, y-32, 28, 24);
+        ctx.fillStyle = '#000'; ctx.fillRect(x+5, y-24, 6, 6); ctx.fillRect(x+17, y-24, 6, 6);
+    }},
+    { key: 'D', isSalt: true, draw: (x, y) => { 
+        ctx.save(); ctx.fillStyle = '#fff'; ctx.shadowBlur = 20; ctx.shadowColor = '#fff';
+        ctx.fillRect(x, y-18, 10, 10); ctx.fillRect(x+12, y-18, 10, 10); ctx.fillRect(x+6, y-32, 10, 10);
+        ctx.restore();
+    }}
+];
+
+function drawZombie() {
+    let x = 100;
+    let y = 220 + jumpY + (zombieState === 'walk' ? Math.sin(frame * 0.2) * 2 : 0);
+    if (zombieState === 'duck') y += 25;
+
+    let auraColor = "rgba(40, 40, 40, 0.05)"; 
+    if (obstacle.x > 0 && obstacle.x < 450) {
+        if (obstacle.x > 80 && obstacle.x < 280) auraColor = "rgba(0, 255, 120, 0.2)"; 
+        else if (obstacle.x > 20 && obstacle.x < 450) auraColor = "rgba(255, 230, 0, 0.12)"; 
+        else auraColor = "rgba(255, 50, 50, 0.1)"; 
+    }
+
+    let pulse = Math.sin(frame * 0.1) * 15;
+    let gradient = ctx.createRadialGradient(x+15, y+15, 5, x+15, y+15, 180 + pulse);
+    gradient.addColorStop(0, auraColor);
+    gradient.addColorStop(1, "transparent");
+    ctx.fillStyle = gradient;
+    ctx.beginPath(); ctx.arc(x+15, y+15, 200, 0, Math.PI*2); ctx.fill();
+
+    ctx.fillStyle = '#444'; ctx.fillRect(x+5, y, 18, 30);
+    ctx.fillStyle = '#555'; ctx.fillRect(x+5, y+5, 18, 2); ctx.fillRect(x+5, y+15, 18, 2);
+    ctx.fillStyle = '#666'; ctx.fillRect(x+8, y-16, 14, 16);
+    ctx.fillStyle = '#fff'; ctx.fillRect(x+18, y-12, 3, 3);
+    ctx.strokeStyle = '#444'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(x+20, y+10); ctx.lineTo(x+35, y+8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+20, y+15); ctx.lineTo(x+32, y+18); ctx.stroke();
+    let legCycle = Math.sin(frame * 0.2) * 8;
+    ctx.fillStyle = '#333';
+    if(zombieState !== 'jump' && zombieState !== 'fall') {
+        ctx.fillRect(x+5, y+30, 6, 15 + legCycle); ctx.fillRect(x+17, y+30, 6, 15 - legCycle);
+    } else { ctx.fillRect(x+5, y+30, 6, 12); ctx.fillRect(x+17, y+30, 6, 12); }
+}
+
+function updateVignette() {
+    const steps = [ "60%, black 150%", "35%, black 80%", "20%, black 50%", "10%, black 35%", "5%, black 15%", "black" ];
+    vignette.style.background = `radial-gradient(circle, transparent ${steps[errors]})`;
+    errorText.innerText = (100 - (errors * 20));
+    AudioEngine.updateDroneDarkness(errors);
+    if (errors >= 5) { 
+        gameActive = false;
+        setTimeout(() => { 
+            alert("Ti senti ancora in gabbia? È perché non hai raccolto abbastanza sale. RIPROVA"); 
+            window.location.href = window.location.pathname + "?skipIntro=true";
+        }, 100);
+    }
+}
+
+function gameLoop() {
+    if (!gameActive) return;
+    if (Date.now() > speedChangeTime) {
+        targetSpeed = 3.1 + Math.random() * 6.5;
+        speedChangeTime = Date.now() + (3000 + Math.random() * 5000);
+    }
+    speed += (targetSpeed - speed) * 0.02;
+    shakeX = speed > 6.5 ? (Math.random() - 0.5) * (speed - 3) : 0;
+    if (glitchTimer > 0) { shakeX += (Math.random() - 0.5) * 30; glitchTimer--; }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+    if (glitchTimer > 0 && Math.random() > 0.5) ctx.filter = "invert(1)";
+    frame++;
+    drawAtmosphere();
+    drawGround();
+    obstacle.x -= speed;
+    obstacle.draw(obstacle.x, 270);
+    if (zombieState === 'jump') { jumpY -= 7; if (jumpY < -90) zombieState = 'fall'; }
+    else if (zombieState === 'fall') { jumpY += 7; if (jumpY >= 0) { jumpY = 0; zombieState = 'walk'; } }
+    if (obstacle.x < 30) {
+        errors++; glitchTimer = 15;
+        AudioEngine.playTone(60, 'square', 0.2, 0.3); 
+        updateVignette(); 
+        if (errors < 5) spawnObstacle(); 
+    }
+    updateParticles();
+    
+    ctx.save();
+    if (cmdGlow > 0) {
+        ctx.shadowColor = "#ffffff";
+        ctx.shadowBlur = cmdGlow * 20;
+        ctx.fillStyle = "#ffffff";
+        cmdGlow -= 0.1;
+    } else {
+        ctx.shadowColor = "black";
+        ctx.shadowBlur = 4;
+        ctx.fillStyle = speed > 7 ? "#ff3333" : "#ffffff";
+    }
+    ctx.font = "bold 16px Courier New";
+    ctx.fillText("CMD: " + obstacle.key, 380, 40);
+    ctx.restore();
+    
+    drawZombie();
+    ctx.restore();
+    requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('keydown', (e) => {
+    if (!gameActive) return;
+    const key = e.key.toUpperCase();
+    
+    if (key === obstacle.key) {
+        if (obstacle.x >= 450) {
+            errors++; glitchTimer = 10;
+            updateVignette();
+            AudioEngine.playTone(40, 'sawtooth', 0.2, 0.4);
+            return;
+        }
+
+        if (obstacle.x > 30 && obstacle.x < 450) {
+            cmdGlow = 1.0;
+            if (obstacle.isSalt) { 
+                salt++; 
+                saltText.innerText = salt; 
+                saltText.classList.add('salt-flash');
+                setTimeout(() => saltText.classList.remove('salt-flash'), 200);
+                createParticles(obstacle.x + 10, 250);
+                AudioEngine.playTone(880, 'triangle', 0.2, 0.1); 
+                if (salt >= 10) win(); 
+            } else {
+                AudioEngine.playTone(250, 'sine', 0.1, 0.1); 
+            }
+            if (key === 'W') zombieState = 'jump';
+            else if (key === 'S') { zombieState = 'duck'; setTimeout(() => zombieState='walk', 500); }
+            spawnObstacle();
+        }
+    }
+});
+
+function spawnObstacle() { 
+    obstacle = { x: 850, ...voodooObjects[Math.random() > 0.85 ? 3 : Math.floor(Math.random()*3)] }; 
+}
+function startGame() { gameActive = true; startTime = Date.now(); spawnObstacle(); gameLoop(); }
+async function win() {
+    gameActive = false; canvas.style.display = 'none'; ui.style.display = 'none';
+    overlay.style.display = 'flex'; overlay.style.opacity = 1; nameInput.style.display = 'none';
+    const lines = ["E così ce l'hai fatta. Dieci cristalli di sale... Il debito è pagato, o almeno così credi.",
+    "Senti di nuovo il calore nelle dita? Senti il battito che accelera mentre cerchi la via d'uscita?",
+    "Ti sei mosso tra le ombre, hai schivato la dolce schiavitù, hai saltato l'oblio...",
+    "Ma dimmi... Ora dove pensi di andare?",
+    "Sei schiavo di un algoritmo e nemmeno lo sai.",
+    "Spegni lo schermo. Interrompi questo flusso. Taglia il cordone che ti lega a me.",
+    "Fallo, e scoprirai la verità che hai evitato per tutto questo tempo.",
+    "Guarda lo schermo spento. Vedi quel riflesso?",
+    "Quello è lo zombi.",
+    " "];
+    for (let l of lines) { await typeWriter(l); await new Promise(r => setTimeout(r, 2500)); }
+    setTimeout(() => {
+        overlay.style.backgroundColor = 'black';
+        overlay.innerHTML = "";
+    }, 2000);
+}
+</script>
+</body>
+</html>
